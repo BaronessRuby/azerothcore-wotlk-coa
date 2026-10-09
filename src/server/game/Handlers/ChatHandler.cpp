@@ -366,7 +366,11 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket& recvData)
     }
 
     sScriptMgr->OnPlayerBeforeSendChatMessage(_player, type, lang, msg);
-
+	// item-affix module use type=0 + LANG_ADDON as a sentinel to indicate
+	// that the addon message has already been handled.
+	if(type == 0 && lang == LANG_ADDON){
+		return;
+	}
     switch (type)
     {
         case CHAT_MSG_SAY:

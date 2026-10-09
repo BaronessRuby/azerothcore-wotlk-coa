@@ -720,6 +720,9 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
     //this THING should be here to protect code from quest, which cast on player far teleport as a reward
     //should work fine, cause far teleport will be executed in Player::Update()
     SetMustDelayTeleport(true);
+	
+	//Notify scripts before any quest reward item is stored.
+	sScriptMgr->OnPlayerBeforeQuestReward(this, quest);
 
     uint32 quest_id = quest->GetQuestId();
 

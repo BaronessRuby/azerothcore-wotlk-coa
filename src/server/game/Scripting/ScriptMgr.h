@@ -395,7 +395,8 @@ public: /* PlayerScript */
     void OnPlayerBeforeFillQuestLootItem(Player* player, LootItem& item);
     void OnPlayerStoreNewItem(Player* player, Item* item, uint32 count);
     void OnPlayerCreateItem(Player* player, Item* item, uint32 count);
-    void OnPlayerQuestRewardItem(Player* player, Item* item, uint32 count);
+    void OnPlayerBeforeQuestReward(Player* player, Quest const* quest);
+	void OnPlayerQuestRewardItem(Player* player, Item* item, uint32 count);
     bool OnPlayerCanPlaceAuctionBid(Player* player, AuctionEntry* auction);
     void OnPlayerGroupRollRewardItem(Player* player, Item* item, uint32 count, RollVote voteType, Roll* roll);
     bool OnPlayerBeforeOpenItem(Player* player, Item* item);

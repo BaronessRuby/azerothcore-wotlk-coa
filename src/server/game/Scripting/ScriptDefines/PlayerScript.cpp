@@ -424,6 +424,11 @@ void ScriptMgr::OnPlayerCreateItem(Player* player, Item* item, uint32 count)
     CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_CREATE_ITEM, script->OnPlayerCreateItem(player, item, count));
 }
 
+void ScriptMgr::OnPlayerBeforeQuestReward(Player* player, Quest const* quest)
+{
+	CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_BEFORE_QUEST_REWARD, script->OnPlayerBeforeQuestReward(player, quest));
+}
+
 void ScriptMgr::OnPlayerQuestRewardItem(Player* player, Item* item, uint32 count)
 {
     CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_QUEST_REWARD_ITEM, script->OnPlayerQuestRewardItem(player, item, count));

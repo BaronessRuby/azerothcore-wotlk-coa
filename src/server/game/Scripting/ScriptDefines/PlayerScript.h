@@ -102,6 +102,7 @@ enum PlayerHook
     PLAYERHOOK_ON_AFTER_MOVE_ITEM_FROM_INVENTORY,
     PLAYERHOOK_ON_EQUIP,
     PLAYERHOOK_ON_UNEQUIP_ITEM,
+	PLAYERHOOK_ON_BEFORE_QUEST_REWARD,
     PLAYERHOOK_ON_PLAYER_JOIN_BG,
     PLAYERHOOK_ON_PLAYER_JOIN_ARENA,
     PLAYERHOOK_GET_CUSTOM_GET_ARENA_TEAM_ID,
@@ -512,6 +513,9 @@ public:
 
     //After creating item (eg profession item creation)
     virtual void OnPlayerCreateItem(Player* /*player*/, Item* /*item*/, uint32 /*count*/) { }
+	
+	//Fires once per quest turn-in, before reward items are created/stored
+	virtual void OnPlayerBeforeQuestReward(Player* /*player*/, Quest const* /*quest*/) { }
 
     // After receiving item as a quest reward
     virtual void OnPlayerQuestRewardItem(Player* /*player*/, Item* /*item*/, uint32 /*count*/) { }
