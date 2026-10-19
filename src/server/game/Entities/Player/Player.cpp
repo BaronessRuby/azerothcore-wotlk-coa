@@ -3544,7 +3544,7 @@ bool Player::IsNeedCastPassiveSpellAtLearn(SpellInfo const* spellInfo) const
     // note: form passives activated with shapeshift spells be implemented by HandleShapeshiftBoosts instead of spell_learn_spell
     // talent dependent passives activated at form apply have proper stance data
     ShapeshiftForm form = GetShapeshiftForm();
-    return (!spellInfo->Stances || (form && (spellInfo->Stances & (1 << (form - 1)))) ||
+    return (!spellInfo->Stances || (form && (spellInfo->Stances & (uint64(1) << (form - 1)))) ||
             (!form && spellInfo->HasAttribute(SPELL_ATTR2_ALLOW_WHILE_NOT_SHAPESHIFTED)));
 }
 
@@ -3841,6 +3841,28 @@ void Player::removeSpell(uint32 spell_id, uint8 removeSpecMask, bool onlyTempora
     }
 }
 
+void Player::CastRidingMount(uint32 spellId)
+{
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+    if (!spellInfo)
+        return;
+
+    CustomSpellValues values;
+    uint16 const riding = GetBaseSkillValue(SKILL_RIDING);
+    for (SpellEffectInfo const& effect : spellInfo->GetEffects())
+    {
+        int32 speed = 0;
+        if (effect.ApplyAuraName == SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED)
+            speed = GetRidingGroundMountSpeed(riding);
+        else if (effect.ApplyAuraName == SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED)
+            speed = GetRidingFlightMountSpeed(riding);
+        if (speed)
+            values.AddSpellMod(SpellValueMod(SPELLVALUE_BASE_POINT0 + effect.EffectIndex), speed);
+    }
+
+    CastCustomSpell(spellId, values, this, TRIGGERED_FULL_MASK);
+}
+
 bool Player::Has310Flyer(bool checkAllSpells, uint32 excludeSpellId)
 {
     if (!checkAllSpells)
@@ -3938,6 +3960,17 @@ void Player::RemoveArenaSpellCooldowns(bool removeActivePetCooldowns)
             // actually clear cooldowns
             pet->m_CreatureSpellCooldowns.clear();
         }
+}
+
+void Player::RemoveActivePetSpellCooldowns()
+{
+    if (Pet* pet = GetPet())
+    {
+        for (auto const& cooldown : pet->m_CreatureSpellCooldowns)
+            SendClearCooldown(cooldown.first, pet);
+
+        pet->m_CreatureSpellCooldowns.clear();
+    }
 }
 
 void Player::RemoveAllSpellCooldown()
@@ -8439,7 +8472,8 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
             switch (loot_type)
             {
                 case LOOT_DISENCHANTING:
-                    loot->FillLoot(item->GetTemplate()->DisenchantID, LootTemplates_Disenchant, this, true);
+                    loot->FillLoot(LocalLevelScaling::InstanceTemplateFor(item, item->GetTemplate())->DisenchantID,
+                        LootTemplates_Disenchant, this, true);
                     break;
                 case LOOT_PROSPECTING:
                     loot->FillLoot(item->GetEntry(), LootTemplates_Prospecting, this, true);
@@ -11683,9 +11717,12 @@ void Player::AddSpellAndCategoryCooldowns(SpellInfo const* spellInfo, uint32 ite
                     continue;
                 }
 
-                // Only within the same spellfamily
+                // Only within the same spellfamily, except for item-driven cooldowns in the shared
+                // potion pool, which spans spell families by design (classic potions vs. custom
+                // consumables such as the ranger waterskins, see #6911).
+                bool const sharedPotionPool = itemId > 0 && cat == SPELL_CATEGORY_SHARED_POTION_COOLDOWN;
                 SpellInfo const* categorySpellInfo = sSpellMgr->GetSpellInfo(i_scset->second);
-                if (!categorySpellInfo || categorySpellInfo->SpellFamilyName != spellInfo->SpellFamilyName)
+                if (!categorySpellInfo || (!sharedPotionPool && categorySpellInfo->SpellFamilyName != spellInfo->SpellFamilyName))
                 {
                     continue;
                 }
@@ -12939,7 +12976,8 @@ bool Player::InBattlegroundQueue(bool ignoreArena) const
         if (_BgBattlegroundQueueID[i].bgQueueTypeId != BATTLEGROUND_QUEUE_NONE &&
             (!ignoreArena || (_BgBattlegroundQueueID[i].bgQueueTypeId != BATTLEGROUND_QUEUE_2v2 &&
                 _BgBattlegroundQueueID[i].bgQueueTypeId != BATTLEGROUND_QUEUE_3v3 &&
-                _BgBattlegroundQueueID[i].bgQueueTypeId != BATTLEGROUND_QUEUE_5v5)))
+                _BgBattlegroundQueueID[i].bgQueueTypeId != BATTLEGROUND_QUEUE_5v5 &&
+                _BgBattlegroundQueueID[i].bgQueueTypeId != BATTLEGROUND_QUEUE_1v1)))
             return true;
     return false;
 }
@@ -13440,7 +13478,9 @@ uint32 Player::GetResurrectionSpellId()
     }
 
     // Reincarnation (passive spell)  // prio: 1                  // Glyph of Renewed Life
-    if (prio < 1 && HasSpell(20608) && !HasSpellCooldown(21169) && (HasAura(58059) || HasItemCount(17030)))
+    std::vector<uint32> const reincarnation = sSpellMgr->GetSpellAndRelatives(20608);
+    bool const knowsReincarnation = std::any_of(reincarnation.begin(), reincarnation.end(), [this](uint32 spellId) { return HasSpell(spellId); });
+    if (prio < 1 && knowsReincarnation && !HasSpellCooldown(21169) && (HasAura(58059) || HasItemCount(17030)))
         spell_id = 21169;
 
     return spell_id;
@@ -13966,7 +14006,7 @@ bool Player::CanTitanGrip(ItemTemplate const* weapon) const
         (weapon->SubClass != ITEM_SUBCLASS_WEAPON_POLEARM || commander));
 }
 
-void Player::SetTemporarySpellReplacement(uint32 original, uint32 replacement)
+void Player::SetTemporarySpellReplacement(uint32 original, uint32 replacement, bool redirect)
 {
     auto itr = m_temporarySpellReplacements.find(original);
     uint32 previous = itr == m_temporarySpellReplacements.end() ? original : itr->second;
@@ -13978,6 +14018,7 @@ void Player::SetTemporarySpellReplacement(uint32 original, uint32 replacement)
     if (!replacement)
     {
         m_temporarySpellReplacements.erase(original);
+        m_temporarySpellReplacementKeepsCast.erase(original);
         replacement = original;
     }
     else
@@ -13986,6 +14027,10 @@ void Player::SetTemporarySpellReplacement(uint32 original, uint32 replacement)
             return;
         m_temporarySpellReplacements[original] = replacement;
         m_temporarySpellReplacementOrigins[replacement] = original;
+        if (redirect)
+            m_temporarySpellReplacementKeepsCast.erase(original);
+        else
+            m_temporarySpellReplacementKeepsCast[original] = 1;
     }
     if (previous != replacement && IsInWorld() && HasActiveSpell(original))
     {
@@ -14008,6 +14053,13 @@ uint32 Player::GetTemporarySpellReplacement(uint32 original) const
     auto itr = m_temporarySpellReplacements.find(original);
     return itr != m_temporarySpellReplacements.end() && HasActiveSpell(original) && HasActiveSpell(itr->second) ?
         itr->second : original;
+}
+
+uint32 Player::GetCastReplacement(uint32 original) const
+{
+    if (m_temporarySpellReplacementKeepsCast.count(original))
+        return original;
+    return GetTemporarySpellReplacement(original);
 }
 
 bool Player::IsTemporarySpellReplacementStandIn(uint32 spellId) const
@@ -14488,7 +14540,18 @@ LootItem* Player::StoreLootItem(uint8 lootSlot, Loot* loot, InventoryResult& msg
     }
 
     ItemPosCountVec dest;
-    msg = CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, item->itemid, item->count);
+    uint32 storedCount = item->count;
+    uint32 noSpaceForCount = 0;
+    msg = CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, item->itemid, storedCount, &noSpaceForCount);
+    // A quest drop stack can exceed what the item's carry limit still allows; take what fits
+    // instead of refusing the whole stack while the quest still needs items.
+    if (msg == EQUIP_ERR_CANT_CARRY_MORE_OF_THIS && item->needs_quest && noSpaceForCount < storedCount)
+    {
+        storedCount -= noSpaceForCount;
+        dest.clear();
+        msg = CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, item->itemid, storedCount);
+    }
+
     if (msg == EQUIP_ERR_OK)
     {
         AllowedLooterSet looters = item->GetAllowedLooters();
@@ -14526,14 +14589,14 @@ LootItem* Player::StoreLootItem(uint8 lootSlot, Loot* loot, InventoryResult& msg
 
         --loot->unlootedCount;
 
-        SendNewItem(newitem, uint32(item->count), false, false, true);
+        SendNewItem(newitem, storedCount, false, false, true);
         UpdateLootAchievements(item, loot);
 
         // LootItem is being removed (looted) from the container, delete it from the DB.
         if (loot->containerGUID)
             sLootItemStorage->RemoveStoredLootItem(loot->containerGUID, item->itemid, item->count, loot, item->itemIndex);
 
-        sScriptMgr->OnPlayerLootItem(this, newitem, item->count, this->GetLootGUID());
+        sScriptMgr->OnPlayerLootItem(this, newitem, storedCount, this->GetLootGUID());
     }
     else
     {
@@ -15854,13 +15917,13 @@ void Player::_SaveCharacter(bool create, CharacterDatabaseTransaction trans)
         stmt->SetData(index++, GetByteValue(PLAYER_BYTES_2, 3));
         stmt->SetData(index++, GetPlayerFlags());
 
-        if (_scriptedPrivateMapId && (GetMapId() == _scriptedPrivateMapId
-            || (IsBeingTeleported() && GetTeleportDest().GetMapId() == _scriptedPrivateMapId)))
+        if (_scriptedPrivateMapId != MAPID_INVALID)
         {
             // Private-instance IDs are process-local. Crash recovery always starts outside.
             stmt->SetData(index++, uint16(_scriptedPrivateReturn.GetMapId()));
             stmt->SetData(index++, uint32(0));
-            stmt->SetData(index++, uint8(GetDungeonDifficulty()) | uint8(GetRaidDifficulty()) << 4);
+            stmt->SetData(index++, uint8(_scriptedPrivateReturnDungeonDifficulty)
+                | uint8(_scriptedPrivateReturnRaidDifficulty) << 4);
             stmt->SetData(index++, finiteAlways(_scriptedPrivateReturn.GetPositionX()));
             stmt->SetData(index++, finiteAlways(_scriptedPrivateReturn.GetPositionY()));
             stmt->SetData(index++, finiteAlways(_scriptedPrivateReturn.GetPositionZ()));
@@ -17537,7 +17600,10 @@ void Player::SendAllSpellChargeStates() const
     GetSession()->SendPacket(&clear);
 
     if (partialPools.empty())
+    {
+        sScriptMgr->OnPlayerSendSpellChargeStates(this);
         return;
+    }
 
     WorldPacket packet(SMSG_SEND_SPELL_CHARGES, 4 + partialPools.size() * 9);
     packet << uint32(partialPools.size());
@@ -17548,6 +17614,7 @@ void Player::SendAllSpellChargeStates() const
         packet << uint8(pool.second);
     }
     GetSession()->SendPacket(&packet);
+    sScriptMgr->OnPlayerSendSpellChargeStates(this);
 }
 
 std::string Player::GetDebugInfo() const

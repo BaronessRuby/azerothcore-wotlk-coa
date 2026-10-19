@@ -99,8 +99,9 @@ namespace
     constexpr uint32 UNIT_DYNFLAG_LEVEL_SCALING = 0x100;
 
     /// The dungeon finder entries whose dungeons scale: the classic five-player dungeons the client's own
-    /// scaling list names.
-    constexpr char DEFAULT_SCALING_DUNGEONS[] = "1 4 6 8 10 12 14 16 18 20 22 24 26 28 163 164 165 272 273";
+    /// scaling list names, plus Blackrock Depths, Lower and Upper Blackrock Spire, Dire Maul, Stratholme
+    /// and Scholomance, the classic dungeons the client list leaves out.
+    constexpr char DEFAULT_SCALING_DUNGEONS[] = "1 2 4 6 8 10 12 14 16 18 20 22 24 26 28 30 32 34 36 38 40 44 51 54 163 164 165 272 273 274 276 601";
 
     /// Where a view can exist at all: the open-world maps, and the classic dungeons with the band their
     /// creatures are held inside. Built on every config load and at startup, and published whole, so a
@@ -229,7 +230,7 @@ namespace
     /// These exclusions are not optional: a creature that belongs to somebody - a pet, a guardian, a
     /// summon, a totem, a charmed unit - must never be re-levelled, and neither must a trigger, a
     /// critter or a non-combat pet, which are scenery with a health bar. A world boss is authored for a
-    /// raid at its level, and a creature that serves (any npcflag) or cannot be fought keeps its level
+    /// raid at its level, and a creature that serves (any npcflag but gossip) or cannot be fought keeps its level
     /// for everyone. Those two are read from the creature's spawn and template rather than from its
     /// live flags, which scripts toggle during events: a client caches the level it was told, so the
     /// view must not appear and vanish with them.
@@ -273,7 +274,7 @@ namespace
         uint32 unitFlags = 0;
         uint32 dynamicFlags = 0;
         ObjectMgr::ChooseCreatureFlags(info, npcFlags, unitFlags, dynamicFlags, creature->GetCreatureData());
-        return !npcFlags &&
+        return !(npcFlags & ~UNIT_NPC_FLAG_GOSSIP) &&
                !(unitFlags & (UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_IMMUNE_TO_PC));
     }
 
@@ -453,6 +454,30 @@ namespace
     {
         double Value = 0.0;
     };
+
+    constexpr char SEEN_FACTION_KEY[] = "DestinyWeaver.SeenFaction";
+
+    struct SeenFaction : DataMap::Base
+    {
+        uint32 Value = 0;
+    };
+
+    /// Whether the creature's faction moved since its last update. A faction change decides whether a
+    /// character is looking at their own version at all (`ViewableBy`), but the values block it causes
+    /// carries only the faction, so the level and pool the client was told stay the old ones: a
+    /// friendly creature that turns hostile keeps its authored level and a full bar. The first look
+    /// only records the faction.
+    bool FactionChanged(Creature* creature)
+    {
+        auto* seen = creature->CustomData.GetDefault<SeenFaction>(SEEN_FACTION_KEY);
+        uint32 const faction = creature->GetFaction();
+        if (seen->Value == faction)
+            return false;
+
+        bool const changed = seen->Value != 0;
+        seen->Value = faction;
+        return changed;
+    }
 
     /// A client whose view stopped being true, until it has been re-sent.
     ///
@@ -902,6 +927,7 @@ public:
     void OnCreatureRemoveWorld(Creature* creature) override
     {
         creature->CustomData.Erase(DAMAGE_REMAINDER_KEY);
+        creature->CustomData.Erase(SEEN_FACTION_KEY);
     }
 
     void OnAllCreatureUpdate(Creature* creature, uint32 /*diff*/) override
@@ -914,6 +940,9 @@ public:
 
         if (creature->IsAlive())
             MarkScalable(creature);
+
+        if (creature->HasDynamicFlag(UNIT_DYNFLAG_LEVEL_SCALING) && FactionChanged(creature))
+            ForceViewFields(creature);
 
         // Nothing pending: the whole world pays one relaxed atomic read per creature update.
         if (!g_viewRefreshCount.load(std::memory_order_relaxed))

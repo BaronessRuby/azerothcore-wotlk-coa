@@ -65,8 +65,11 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include "AscensionCompatOpcodes.h"
+#include "AscensionDungeonRelease.h"
+#include "AscensionSpecLoot.h"
 #include "CoADungeonCompletion.h"
 #include "SpellMgr.h"
+#include "SpellScript.h"
 #include "TemporarySummon.h"
 #include "Timer.h"
 
@@ -74,9 +77,11 @@
 #include <array>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <cstring>
+#include <iterator>
 #include <tuple>
 #include <unordered_map>
 
@@ -422,27 +427,19 @@ namespace
                                    : sConfigMgr->GetOption<uint32>("MythicPlus.DefaultForces.Normal", 1);
     }
 
-    // Kill credit in the creature's base entry; the six Ring of Law arena
-    // bosses credit Ring of Law (High Justice Grimstone), the one the client
-    // lists for Blackrock Depths - Prison.
-    uint32 CreditEntry(Creature* creature)
-    {
-        uint32 base = BaseEntry(creature->GetEntry());
-        if (creature->GetMapId() == 230 && base >= 9027 && base <= 9032)
-            return 10096;
-        return base;
-    }
-
     // The boss of the run's wing this kill completes, as the client lists it
-    // in DungeonEncounterExtra.dbc, or nullptr.
+    // in DungeonEncounterExtra.dbc, or nullptr. The Ring of Law ends with one
+    // of six arena bosses, and the client lists each with its own encounter
+    // (2981-2986 for Blackrock Depths - Prison), final like Ring of Law itself;
+    // the progress packet carries the killed boss's own id, as on Ascension.
     WingEncounter const* FindWingEncounter(Run const& run, Creature* creature)
     {
         std::vector<WingEncounter> const* list = Data::Instance().GetWingEncounters(run.lfgId);
         if (!list)
             return nullptr;
-        uint32 const credit = CreditEntry(creature);
+        uint32 const base = BaseEntry(creature->GetEntry());
         for (WingEncounter const& encounter : *list)
-            if (encounter.creature == credit || encounter.creature == creature->GetEntry())
+            if (encounter.creature == base || encounter.creature == creature->GetEntry())
                 return &encounter;
         return nullptr;
     }
@@ -800,9 +797,10 @@ namespace
     }
 
 
-    // Item pools the caches and spoils draw from: Mythic+ items of each level
-    // (level 60 armor and weapons whose description is @Mythic N@), and the
-    // Heroic and Mythic versions of the vanilla dungeon items.
+    // Item pools the caches and spoils draw from: the Mythic+ levels of the vanilla dungeon items (level 60 armor and
+    // weapons whose description is @Mythic N@ and whose name and slot match a Mythic dungeon item, as the upgrade
+    // chains pair them), and the Heroic and Mythic versions of the vanilla dungeon items. Other @Mythic N@ items are
+    // raid, quest or placeholder items ("Ahn'Qiraj Wand [PH]") that no dungeon drops.
     std::map<uint32, std::vector<uint32>> g_mythicItems;
     std::vector<uint32> g_heroicItems;
     std::vector<uint32> g_mythicDungeonItems;
@@ -812,8 +810,11 @@ namespace
         g_mythicItems.clear();
         g_heroicItems.clear();
         g_mythicDungeonItems.clear();
-        if (QueryResult result = WorldDatabase.Query("SELECT entry, description FROM item_template WHERE description LIKE '@Mythic %@' "
-            "AND RequiredLevel = 60 AND class IN (2, 4) AND Quality >= 3"))
+        if (QueryResult result = WorldDatabase.Query("SELECT MIN(p.entry), p.description FROM item_template p "
+            "JOIN (SELECT DISTINCT i.name, i.InventoryType FROM coa_dungeon_loot_variant v JOIN item_template i ON i.entry = v.mythic_item) d "
+            "ON d.name = p.name AND d.InventoryType = p.InventoryType "
+            "WHERE p.description LIKE '@Mythic %@' AND p.RequiredLevel = 60 AND p.class IN (2, 4) AND p.Quality >= 3 "
+            "GROUP BY p.name, p.InventoryType, p.description"))
             do
             {
                 std::string const text = (*result)[1].Get<std::string>();
@@ -835,6 +836,21 @@ namespace
     uint32 RandomOf(std::vector<uint32> const& pool)
     {
         return pool.empty() ? 0 : pool[urand(0, uint32(pool.size()) - 1)];
+    }
+
+    // A random item the player can wear, preferring the active specialization's
+    // primary stats like Dungeon Spoils and Callboard Caches do.
+    uint32 RandomForSpecialization(Player const* player, std::vector<uint32> const& pool)
+    {
+        std::vector<uint32> wearable;
+        std::copy_if(pool.begin(), pool.end(), std::back_inserter(wearable), [player](uint32 entry)
+        {
+            ItemTemplate const* item = sObjectMgr->GetItemTemplate(entry);
+            return item && player->CanUseItem(item) == EQUIP_ERR_OK &&
+                (!item->GetSkill() || player->GetSkillValue(item->GetSkill()));
+        });
+        return RandomOf(AscensionSpecLoot::PreferSpecialization(player, wearable.empty() ? pool : wearable,
+            [](uint32 entry) { return sObjectMgr->GetItemTemplate(entry); }));
     }
 
     // ---------------------------------------------------------------- champions
@@ -1063,13 +1079,20 @@ namespace
         lfg::LFGDungeonData const* start = sLFGMgr->GetLFGDungeon(run.lfgId);
         AreaTriggerTeleport const* entrance = sObjectMgr->GetMapEntranceTrigger(map->GetId());
         std::string const affixText = AffixNames(run.affixes);
+        // A player who dies during the key is revived here too (AscensionDungeonRelease).
+        std::optional<Position> wingStart;
+        if (start && (start->x || start->y || start->z))
+            wingStart = Position(start->x, start->y, start->z, start->o);
+        else if (entrance && entrance->target_mapId == map->GetId())
+            wingStart = Position(entrance->target_X, entrance->target_Y, entrance->target_Z, entrance->target_Orientation);
+        if (wingStart)
+            CoASetDungeonReleaseStart(map, *wingStart);
         ForEachPlayer(map, [&](Player* p)
         {
             SendWindow(p, false);
-            if (start && (start->x || start->y || start->z))
-                p->NearTeleportTo(start->x, start->y, start->z, start->o);
-            else if (entrance && entrance->target_mapId == map->GetId())
-                p->NearTeleportTo(entrance->target_X, entrance->target_Y, entrance->target_Z, entrance->target_Orientation);
+            if (wingStart)
+                p->NearTeleportTo(wingStart->GetPositionX(), wingStart->GetPositionY(), wingStart->GetPositionZ(),
+                    wingStart->GetOrientation());
             ApplyPlayerAffixes(p, run);
             p->SetControlled(true, UNIT_STATE_ROOT);
             SendInstanceInfo(p, run.instanceId);
@@ -1280,6 +1303,13 @@ public:
                 continue;
             WorldPacket data(SMSG_PATCH_MYTHIC_AFFIXES, sizeof(row));
             for (uint32 field : row)
+                data << field;
+            player->SendDirectMessage(&data);
+        }
+        for (uint32 rotation : { week, (week + 1) % 53 })
+        {
+            WorldPacket data(SMSG_PATCH_MYTHIC_AFFIXES, 16 * sizeof(uint32));
+            for (uint32 field : Data::Instance().PlusOneAffixRow(rotation))
                 data << field;
             player->SendDirectMessage(&data);
         }
@@ -1520,6 +1550,32 @@ public:
 // Using a keystone casts "Activate Keystone" (161). The client does not open the socket by itself; the
 // server opens it only when this very key can be started here: its dungeon (any wing), Mythic difficulty,
 // the group leader, no run and no dead boss in the instance yet.
+class spell_coa_mythic_life_steal : public SpellScript
+{
+    PrepareSpellScript(spell_coa_mythic_life_steal);
+
+    void PreventSelfHeal(SpellEffIndex effIndex)
+    {
+        PreventHitDefaultEffect(effIndex);
+    }
+
+    void HealCaster()
+    {
+        Unit* caster = GetCaster();
+        int32 const drained = GetHitDamage();
+        if (!caster || !caster->IsAlive() || drained <= 0)
+            return;
+        HealInfo healInfo(caster, caster, uint32(drained), GetSpellInfo(), GetSpellInfo()->GetSchoolMask());
+        caster->HealBySpell(healInfo);
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_coa_mythic_life_steal::PreventSelfHeal, EFFECT_1, SPELL_EFFECT_APPLY_AURA);
+        AfterHit += SpellHitFn(spell_coa_mythic_life_steal::HealCaster);
+    }
+};
+
 class coa_mythic_plus_keystone_use : public AllSpellScript
 {
 public:
@@ -1568,7 +1624,8 @@ public:
 };
 
 // Mythical Cache (Mythic 1-12): one random Mythic+ item of that level from any
-// dungeon, at most MythicPlus.Caches.WeeklyCap opened per week. Dungeon Spoils
+// dungeon, favouring the opener's specialization, at most
+// MythicPlus.Caches.WeeklyCap opened per week. Dungeon Spoils
 // (Heroic/Mythic): one or two random Heroic/Mythic dungeon items.
 class coa_mythic_plus_cache : public ItemScript
 {
@@ -1599,7 +1656,7 @@ public:
                     weekly.caches, WeeklyCacheCap());
                 return true;
             }
-            rewards.push_back(RandomOf(g_mythicItems[uint32(itr - MYTHICAL_CACHES.begin()) + 1]));
+            rewards.push_back(RandomForSpecialization(player, g_mythicItems[uint32(itr - MYTHICAL_CACHES.begin()) + 1]));
         }
 
         std::erase(rewards, 0u);
@@ -1828,12 +1885,18 @@ namespace
         return true;
     }
 
-    // Recycling gives 45 + level coins and counts towards the weekly coin cap.
+    // Recycling gives 45 + level coins and counts towards the weekly coin cap. Only Mythic 1 and up: a Mythic
+    // Dungeon item (level 0) drops from every Mythic run and would turn into coins for free.
     bool Recycle(Player* player, Item* item)
     {
         auto itr = g_chainOf.find(item->GetEntry());
         if (itr == g_chainOf.end())
             return false;
+        if (!itr->second.second)
+        {
+            ChatHandler(player->GetSession()).SendSysMessage("Only Mythic 1 and higher items can be recycled.");
+            return false;
+        }
         uint32 const value = RecycleValue(itr->second.second);
         Weekly const weekly = GetWeekly(player->GetGUID());
         if (weekly.coins + value > WeeklyCoinCap())
@@ -1991,7 +2054,8 @@ private:
         ForEachOwnedItem(player, false, [&](Item* item)
         {
             auto itr = g_chainOf.find(item->GetEntry());
-            if (itr == g_chainOf.end())
+            if (itr == g_chainOf.end() || !itr->second.second ||
+                player->PlayerTalkClass->GetGossipMenu().GetMenuItemCount() >= GOSSIP_MAX_MENU_ITEMS - 1)
                 return;
             std::string const name = item->GetTemplate()->Name1;
             std::string const level = LevelName(itr->second.second);
@@ -2161,6 +2225,38 @@ public:
     }
 };
 
+// A boon's spell reaches only the user's party within 45 yards; on the live server it buffs every player within
+// 50 yards in line of sight of the user, so the script applies it to each of them and uses up the item.
+constexpr float BOON_RANGE = 50.0f;
+
+void ApplyBoon(Player* user, uint32 spellId)
+{
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    if (!info)
+        return;
+    std::vector<Player*> targets;
+    user->GetMap()->DoForAllPlayers([&](Player* target)
+    {
+        if (target->IsAlive() && (target == user || (target->IsWithinDistInMap(user, BOON_RANGE) && user->IsWithinLOSInMap(target))))
+            targets.push_back(target);
+    });
+    for (Player* target : targets)
+    {
+        bool aura = false;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+        {
+            if (effect.IsAura())
+                aura = true;
+            else if (effect.Effect == SPELL_EFFECT_TRIGGER_SPELL)
+                user->AddAura(effect.TriggerSpell, target);
+            else if (effect.Effect == SPELL_EFFECT_HEAL_PCT)
+                target->ModifyHealth(int32(target->CountPctFromMaxHealth(effect.CalcValue(user))));
+        }
+        if (aura)
+            user->AddAura(spellId, target);
+    }
+}
+
 class item_coa_mythic_boon : public ItemScript
 {
 public:
@@ -2169,10 +2265,16 @@ public:
     bool OnUse(Player* player, Item* item, SpellCastTargets const& /*targets*/) override
     {
         std::lock_guard<std::recursive_mutex> guard(g_lock);
-        if (InRunningKey(player->GetMap()))
-            return false;
-        player->SendEquipError(EQUIP_ERR_CANT_DO_RIGHT_NOW, item, nullptr);
-        ChatHandler(player->GetSession()).SendSysMessage("Mythical Boons work only inside a Mythic Keystone.");
+        if (!InRunningKey(player->GetMap()))
+        {
+            player->SendEquipError(EQUIP_ERR_CANT_DO_RIGHT_NOW, item, nullptr);
+            ChatHandler(player->GetSession()).SendSysMessage("Mythical Boons work only inside a Mythic Keystone.");
+            return true;
+        }
+        uint32 const spellId = item->GetTemplate()->Spells[0].SpellId;
+        uint32 one = 1;
+        player->DestroyItemCount(item, one, true);
+        ApplyBoon(player, spellId);
         return true;
     }
 };
@@ -2832,4 +2934,5 @@ void AddCoaMythicPlusScripts()
     new coa_mythic_plus_boss_casts();
     new coa_mythic_plus_boss_kills();
     new coa_mythic_plus_keystone_use();
+    RegisterSpellScript(spell_coa_mythic_life_steal);
 }

@@ -4448,7 +4448,9 @@ void Spell::SendSpellCooldown()
     // mana/health/etc potions, disabled by client (until combat out as declarate)
     // A triggered spell never clears the potion (Player::UpdatePotionCooldown skips it), so it must not set it either:
     // an item whose second on-use spell is triggered would otherwise leave every potion "not ready" out of combat.
-    if (m_CastItem && !IsIgnoringCooldowns() && (m_CastItem->IsPotion() || m_spellInfo->IsCooldownStartedOnEvent()))
+    if (m_CastItem && !IsIgnoringCooldowns() &&
+        (m_CastItem->IsPotion() || m_spellInfo->IsCooldownStartedOnEvent() ||
+         m_CastItem->GetTemplate()->UsesSharedPotionCooldown(m_spellInfo->Id)))
     {
         // need in some way provided data for Spell::finish SendCooldownEvent
         _player->SetLastPotionId(m_CastItem->GetEntry());
@@ -5798,7 +5800,9 @@ SpellCastResult Spell::CheckCast(bool strict, uint32* /*param1*/, uint32* /*para
             }
 
             // check if we are using a potion in combat for the 2nd+ time. Cooldown is added only after caster gets out of combat
-            if (m_caster->ToPlayer()->GetLastPotionId() && m_CastItem && (m_CastItem->IsPotion() || m_spellInfo->IsCooldownStartedOnEvent()))
+            if (m_caster->ToPlayer()->GetLastPotionId() && m_CastItem &&
+                (m_CastItem->IsPotion() || m_spellInfo->IsCooldownStartedOnEvent() ||
+                 m_CastItem->GetTemplate()->UsesSharedPotionCooldown(m_spellInfo->Id)))
                 return SPELL_FAILED_NOT_READY;
         }
         else if (!IsTriggered() && m_caster->IsCreature() && m_caster->ToCreature()->IsSpellProhibited(m_spellInfo->GetSchoolMask()))
@@ -7000,6 +7004,18 @@ SpellCastResult Spell::CheckCasterAuras(bool preventionOnly) const
     if (m_spellInfo->HasAttribute(SPELL_ATTR6_NOT_AN_ATTACK))
         return SPELL_CAST_OK;
 
+    // Draconic Aspect carries SPELL_ATTR0_ALLOW_WHILE_MOUNTED, which exempts it from the mounted
+    // cast prevention below. Entering it on a mount dismounts the caster instead of being refused;
+    // a taxi flight is the exception, where the form is not allowed at all.
+    if (m_spellInfo->Id == 802117 && m_caster->IsMounted())
+    {
+        if (m_caster->IsInFlight())
+            return SPELL_FAILED_NOT_ON_TAXI;
+
+        m_caster->Dismount();
+        m_caster->RemoveAurasByType(SPELL_AURA_MOUNTED);
+    }
+
     uint8 school_immune = 0;
     uint64 mechanic_immune = 0;
     uint32 dispel_immune = 0;
@@ -7739,7 +7755,8 @@ SpellCastResult Spell::CheckItems(uint32* param1, uint32* param2)
                     if (m_targets.GetItemTarget()->GetOwnerGUID() != m_caster->GetGUID())
                         return SPELL_FAILED_CANT_BE_DISENCHANTED;
 
-                    ItemTemplate const* itemProto = m_targets.GetItemTarget()->GetTemplate();
+                    ItemTemplate const* itemProto = LocalLevelScaling::InstanceTemplateFor(m_targets.GetItemTarget(),
+                        m_targets.GetItemTarget()->GetTemplate());
                     if (!itemProto)
                         return SPELL_FAILED_CANT_BE_DISENCHANTED;
 

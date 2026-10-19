@@ -5,6 +5,7 @@
 #include "DBCStores.h"
 #include "Log.h"
 #include <algorithm>
+#include <array>
 #include <map>
 #include <set>
 
@@ -21,6 +22,17 @@ constexpr std::uint32_t SPELL_RANK_RANK = 3;
 constexpr std::uint32_t TRAINER_SPELL = 1;
 constexpr std::uint32_t SKILL_LINE_ABILITY_SKILL = 1;
 constexpr std::uint32_t SKILL_LINE_ABILITY_SPELL = 2;
+constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 1> TRAINER_RANK_REPLACEMENTS = {{
+    { 53023, 1148051 },
+}};
+
+std::uint32_t TrainerRank(std::uint32_t spellId, SpellExists const& exists)
+{
+    for (auto const& [stock, reborn] : TRAINER_RANK_REPLACEMENTS)
+        if (spellId == stock && exists(reborn))
+            return reborn;
+    return RebornSpell(spellId, exists);
+}
 
 bool Stock(Data const& data, Row const& row)
 {
@@ -195,13 +207,16 @@ std::vector<TrainerSpell> TrainerSpells(Data const& data, Realm const& realm, st
     for (TrainerSpell spell : stock)
     {
         maxLevel = std::max(maxLevel, spell.ReqLevel);
-        std::uint32_t const spellId = RebornSpell(spell.SpellId, exists);
+        std::uint32_t const spellId = TrainerRank(spell.SpellId, exists);
         if (spellId != spell.SpellId)
         {
             TrainerSpell const retuned = reborn(spellId);
             spell.SpellId = spellId;
-            spell.ReqLevel = retuned.ReqLevel;
-            spell.MoneyCost = retuned.MoneyCost;
+            if (retuned.ReqLevel)
+            {
+                spell.ReqLevel = retuned.ReqLevel;
+                spell.MoneyCost = retuned.MoneyCost;
+            }
         }
         for (std::uint32_t& ability : spell.ReqAbility)
             ability = RebornSpell(ability, exists);
@@ -234,6 +249,7 @@ std::vector<TrainerSpell> TrainerSpells(Data const& data, Realm const& realm, st
     for (std::uint32_t spellId : missing)
     {
         TrainerSpell spell = reborn(spellId);
+        spell.ReqLevel = std::max<std::uint32_t>(spell.ReqLevel, 1);
         if (spell.ReqLevel <= maxLevel)
             spells.push_back(spell);
     }
@@ -250,5 +266,43 @@ std::vector<std::pair<std::uint32_t, std::uint32_t>> SpellTwins(std::uint32_t sp
             twins.emplace_back(spellId, spellId + REBORN_SPELL_OFFSET);
     }
     return twins;
+}
+
+std::vector<std::pair<std::uint32_t, std::uint32_t>> SpellNamesakes(std::uint32_t spellCount, SpellLayoutOf const& layout)
+{
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> namesakes;
+    for (std::uint32_t spellId = 1; spellId < REBORN_SPELL_OFFSET && spellId + REBORN_SPELL_OFFSET < spellCount; ++spellId)
+    {
+        std::optional<SpellLayout> const stock = layout(spellId);
+        std::optional<SpellLayout> const reborn = stock ? layout(spellId + REBORN_SPELL_OFFSET) : std::nullopt;
+        if (reborn && reborn->Name == stock->Name && *reborn != *stock)
+            namesakes.emplace_back(spellId, spellId + REBORN_SPELL_OFFSET);
+    }
+    return namesakes;
+}
+
+std::vector<std::pair<std::uint32_t, std::uint32_t>> RankTwins(std::vector<std::pair<std::uint32_t, std::uint32_t>> const& twins,
+    LaterRanks const& laterRanks, FirstRank const& firstRank, SpellLayoutOf const& layout)
+{
+    std::unordered_map<std::uint32_t, std::uint32_t> sources;
+    for (auto const& [source, twin] : twins)
+        sources[twin] = source;
+
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> ranked;
+    for (auto const& [source, twin] : twins)
+    {
+        if (firstRank(source) != source || firstRank(twin) != twin)
+            continue;
+        std::optional<SpellLayout> const head = layout(twin);
+        for (std::uint32_t rank : laterRanks(twin))
+        {
+            auto const known = sources.find(rank);
+            if (known != sources.end() && firstRank(known->second) == source)
+                continue;
+            if (layout(rank) == head)
+                ranked.emplace_back(source, rank);
+        }
+    }
+    return ranked;
 }
 }
