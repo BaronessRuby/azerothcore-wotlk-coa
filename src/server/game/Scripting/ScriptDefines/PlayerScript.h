@@ -102,6 +102,7 @@ enum PlayerHook
     PLAYERHOOK_ON_AFTER_MOVE_ITEM_FROM_INVENTORY,
     PLAYERHOOK_ON_EQUIP,
     PLAYERHOOK_ON_UNEQUIP_ITEM,
+    PLAYERHOOK_ON_SOCKET_GEM,
 	PLAYERHOOK_ON_BEFORE_QUEST_REWARD,
     PLAYERHOOK_ON_PLAYER_JOIN_BG,
     PLAYERHOOK_ON_PLAYER_JOIN_ARENA,
@@ -508,6 +509,9 @@ public:
 
     // After an item has been unequipped
     virtual void OnPlayerUnequip(Player* /*player*/, Item* /*it*/) { }
+
+    // After a gem is socketed into an item (before the gem item is destroyed)
+    virtual void OnPlayerSocketGem(Player* /*player*/, Item* /*item*/, Item* /*gem*/, uint8 /*slot*/) { }
 
     // After player enters queue for BG
     virtual void OnPlayerJoinBG(Player* /*player*/) { }

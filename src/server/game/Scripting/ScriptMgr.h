@@ -391,6 +391,7 @@ public: /* PlayerScript */
     void OnPlayerAfterMoveItemFromInventory(Player* player, Item* it, uint8 bag, uint8 slot, bool update);
     void OnPlayerEquip(Player* player, Item* it, uint8 bag, uint8 slot, bool update);
     void OnPlayerUnequip(Player* player, Item* it);
+    void OnPlayerSocketGem(Player* player, Item* item, Item* gem, uint8 slot);
     void OnPlayerJoinBG(Player* player);
     void OnPlayerJoinArena(Player* player);
     void OnPlayerGetMaxPersonalArenaRatingRequirement(Player const* player, uint32 minSlot, uint32& maxArenaRating) const;

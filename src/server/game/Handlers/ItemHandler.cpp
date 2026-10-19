@@ -1383,7 +1383,10 @@ void WorldSession::HandleSocketOpcode(WorldPackets::Item::SocketGems& packet)
         {
             itemTarget->SetEnchantment(EnchantmentSlot(SOCK_ENCHANTMENT_SLOT + i), GemEnchants[i], 0, 0, _player->GetGUID());
             if (Item* guidItem = _player->GetItemByGuid(packet.GemGuids[i]))
+            {
+                sScriptMgr->OnPlayerSocketGem(_player, itemTarget, guidItem, i);
                 _player->DestroyItem(guidItem->GetBagSlot(), guidItem->GetSlot(), true);
+            }
         }
     }
 

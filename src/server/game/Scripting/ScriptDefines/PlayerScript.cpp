@@ -1149,4 +1149,9 @@ PlayerScript::PlayerScript(char const* name, std::vector<uint16> enabledHooks)
     ScriptRegistry<PlayerScript>::AddScript(this, std::move(enabledHooks));
 }
 
+void ScriptMgr::OnPlayerSocketGem(Player* player, Item* item, Item* gem, uint8 slot)
+{
+    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_SOCKET_GEM, script->OnPlayerSocketGem(player, item, gem, slot));
+}
+
 template class AC_GAME_API ScriptRegistry<PlayerScript>;
