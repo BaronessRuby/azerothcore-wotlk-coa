@@ -151,6 +151,13 @@ __pycache__/
 !/modules/mod-portable-sawmill/
 !/modules/mod-coa-legendary-items/
 !/modules/mod-ethereal-bazaar/
+!/modules/mod-item-affixes/
+!/modules/mod-warband-camp/
+!/modules/mod-nemesis-system/
+!/modules/mod-hunts/
+!/modules/mod-city-siege/
+
+
 
 # Local Manastorm test runtime and duplicate client staging copies
 /ManastormTestRepack/
